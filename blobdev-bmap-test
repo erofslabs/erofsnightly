@@ -1,0 +1,41 @@
+#!/bin/bash
+set -e
+
+echo "=========================================="
+echo "Testing mkfs.erofs with --blobdev and block map"
+echo "=========================================="
+
+cleanup() {
+    fusermount -u mnt 2>/dev/null || true
+    rm -rf test-source extract-dir mnt test.erofs.img test.blob.img
+}
+trap cleanup EXIT
+
+mkdir -p test-source extract-dir mnt
+dd if=/dev/urandom of=test-source/large_file.bin bs=1M count=2 status=none
+echo "Hello EROFS Block Map" > test-source/small_file.txt
+
+if ! bin/mkfs.erofs -E force-inode-blockmap --chunksize=4096 --blobdev=test.blob.img test.erofs.img test-source/; then
+    echo "ERROR: mkfs.erofs failed"
+    exit 1
+fi
+
+if ! bin/fsck.erofs --device=test.blob.img test.erofs.img; then
+    echo "ERROR: fsck.erofs failed to verify the image"
+    exit 1
+fi
+
+if ! bin/erofsfuse --device=test.blob.img test.erofs.img mnt; then
+    echo "ERROR: erofsfuse failed to mount the image"
+    exit 1
+fi
+
+if ! diff -r --no-dereference test-source/ mnt/; then
+    echo "ERROR: Content mismatch! Data read from blob device is corrupted."
+    exit 1
+fi
+
+echo "=========================================="
+echo "ALL TESTS PASSED for blobdev + block map"
+echo "=========================================="
+exit 0

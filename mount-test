@@ -2,10 +2,10 @@
 
 set -ex
 
-OCI_IMAGE="ghcr.io/erofs/alpine:3.23.2"
-EROFS_IMAGE="ghcr.io/erofs/alpine:3.23.2-erofs"
-EROFS_IMAGE_MULTILAYER="ghcr.io/erofs/nginx:1.28.1-alpine-erofs"
-NONEXISTENT_IMAGE="ghcr.io/erofs/nonexistent-image-12345:latest"
+OCI_IMAGE="ghcr.io/erofslabs/alpine:3.23.2"
+EROFS_IMAGE="ghcr.io/erofslabs/alpine:3.23.2-erofs"
+EROFS_IMAGE_MULTILAYER="ghcr.io/erofslabs/nginx:1.28.1-alpine-erofs"
+NONEXISTENT_IMAGE="ghcr.io/erofslabs/nonexistent-image-12345:latest"
 
 # Test type (required: local, nbdlocal, or nbdoci)
 TEST_TYPE="${1}"

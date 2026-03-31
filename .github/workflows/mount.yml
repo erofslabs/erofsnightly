@@ -29,7 +29,7 @@ jobs:
           git clone ${{ vars.EROFSUTILS_SOURCE_URL || 'https://github.com/erofs/erofs-utils' }} -b experimental erofs-utils
           cd erofs-utils
           mkdir output
-          libnl3_flag=""
+          libnl3_flag="--without-libnl3"
           if [ "${{ matrix.libnl3 }}" = "true" ]; then
             libnl3_flag="--with-libnl3"
           fi
@@ -59,6 +59,12 @@ jobs:
             build_with_libnl3: false
           - test_type: local
             runtime_libnl3: false
+          - test_type: nbdlocal
+            build_with_libnl3: true
+            runtime_libnl3: false
+          - test_type: nbdoci
+            build_with_libnl3: true
+            runtime_libnl3: false
     steps:
       - uses: actions/checkout@v4
       - name: Download erofs-utils prebuilts (build=${{ matrix.build_with_libnl3 == true && 'with-nl' || 'wo-nl' }}, runtime=${{ matrix.runtime_libnl3 == true && 'with-nl' || 'wo-nl' }})
@@ -74,6 +80,9 @@ jobs:
           sudo apt-get install -y libfuse2 fuse-overlayfs libssl-dev
           if [ "${{ matrix.runtime_libnl3 }}" = "true" ]; then
             sudo apt-get install -y libnl-3-200 libnl-genl-3-200
+          else
+            sudo apt-get purge -y libnl-3-200 libnl-genl-3-200
+            sudo apt-get autoremove -y --purge
           fi
           if [[ "${{ matrix.test_type }}" == nbd* ]]; then
             sudo modprobe nbd

@@ -90,7 +90,9 @@ jobs:
           chmod +x bin/fuzz_erofsfsck
           mkdir -p artifacts
           ulimit -s 32768
-          bin/fuzz_erofsfsck -fork=2 -artifact_prefix=./artifacts/ -timeout=40 -max_total_time=600 -timeout_exitcode=0 corpus_dir
+          bin/fuzz_erofsfsck -fork=2 -artifact_prefix=./artifacts/ \
+            -timeout=40 -max_total_time=600 -timeout_exitcode=0 \
+            -rss_limit_mb=0 -malloc_limit_mb=0 corpus_dir
       - name: Upload artifacts if tests fail
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4

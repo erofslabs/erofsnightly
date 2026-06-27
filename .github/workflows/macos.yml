@@ -14,10 +14,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build erofs-utils
         run: |
-          brew install autoconf automake git lz4 libtool
+          brew install autoconf automake git lz4 libtool openssl@3
           git clone ${{ vars.EROFSUTILS_SOURCE_URL || 'https://github.com/erofs/erofs-utils' }} -b experimental erofs-utils
           cd erofs-utils
           mkdir output
+          export CPPFLAGS="-I$(brew --prefix openssl@3)/include ${CPPFLAGS:-}"
+          export LDFLAGS="-L$(brew --prefix openssl@3)/lib ${LDFLAGS:-}"
           ./autogen.sh && ./configure --enable-debug --enable-werror --prefix=$(pwd)/output \
             && make && make install
       - name: Upload erofs-utils

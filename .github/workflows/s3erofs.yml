@@ -40,6 +40,20 @@ jobs:
   erofs-s3-smoking:
     runs-on: ubuntu-22.04
     needs: build-erofs-utils
+    env:
+      AWS_CLI_VERSION: 2.36.41
+      RUSTFS_IMAGE: docker.io/rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: test-bucket
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_PAGER: ""
+      NO_PROXY: localhost,127.0.0.1,.localhost
+      RUSTFS_CONTAINER: rustfs-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      RUSTFS_CONTAINER_CREATED: 'false'
     strategy:
       matrix:
         urlstyle: [path, vhost]
@@ -61,55 +75,128 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: erofs-utils
-      - name: Setup MinIO (S3-compatible storage)
+      - name: Install AWS CLI
         run: |
-          # Download and setup MinIO server
-          wget -q https://dl.min.io/server/minio/release/linux-amd64/minio
-          chmod +x minio
-          
-          # Download MinIO client (mc)
-          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc
-          chmod +x mc
-          
-          # Start MinIO server in background
-          mkdir -p minio-data
-          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin MINIO_DOMAIN=localhost \
-            ./minio server minio-data --address :9000 --console-address :9001 &
-          
-          # Wait for MinIO to start
-          sleep 5
-          
-          # Configure MinIO client
-          ./mc alias set local http://localhost:9000 minioadmin minioadmin
-          
-          # Create test bucket
-          ./mc mb local/test-bucket
-          
-          echo "MinIO S3 server is running on http://localhost:9000"
+          curl -fSL --retry 3 \
+            "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" \
+            -o "$RUNNER_TEMP/awscli.zip"
+          unzip -q "$RUNNER_TEMP/awscli.zip" -d "$RUNNER_TEMP/awscli-unpack"
+          "$RUNNER_TEMP/awscli-unpack/aws/install" \
+            --install-dir "$RUNNER_TEMP/aws-cli" \
+            --bin-dir "$RUNNER_TEMP/aws-bin"
+          echo "$RUNNER_TEMP/aws-bin" >> "$GITHUB_PATH"
+          echo "AWS_CONFIG_FILE=$RUNNER_TEMP/aws-config" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/aws-config" <<'EOF'
+          [default]
+          region = us-east-1
+          s3 =
+              addressing_style = path
+              signature_version = s3v4
+          EOF
+          "$RUNNER_TEMP/aws-bin/aws" --version
+      - name: Start RustFS and create bucket
+        run: |
+          RUSTFS_JOB_DIR="$RUNNER_TEMP/rustfs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ strategy.job-index }}"
+          RUSTFS_DATA_DIR="$RUSTFS_JOB_DIR/data"
+          RUSTFS_LOG_DIR="$RUSTFS_JOB_DIR/logs"
+          echo "RUSTFS_CONTAINER=$RUSTFS_CONTAINER" >> "$GITHUB_ENV"
+          export no_proxy="$NO_PROXY"
+          echo "no_proxy=$NO_PROXY" >> "$GITHUB_ENV"
+          mkdir -p "$RUSTFS_DATA_DIR" "$RUSTFS_LOG_DIR"
+          sudo chown 10001:10001 "$RUSTFS_DATA_DIR" "$RUSTFS_LOG_DIR"
+
+          docker run -d --name "$RUSTFS_CONTAINER" \
+            -u 10001:10001 \
+            -p 127.0.0.1:9000:9000 \
+            -v "$RUSTFS_DATA_DIR:/data" \
+            -v "$RUSTFS_LOG_DIR:/logs" \
+            -e RUSTFS_VOLUMES=/data \
+            -e RUSTFS_ADDRESS=0.0.0.0:9000 \
+            -e RUSTFS_CONSOLE_ENABLE=false \
+            -e RUSTFS_SERVER_DOMAINS=localhost \
+            -e RUSTFS_REGION=us-east-1 \
+            -e RUSTFS_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
+            -e RUSTFS_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+            "$RUSTFS_IMAGE"
+          echo "RUSTFS_CONTAINER_CREATED=true" >> "$GITHUB_ENV"
+
+          ready=false
+          for attempt in $(seq 1 60); do
+            if ! docker container inspect -f '{{.State.Running}}' "$RUSTFS_CONTAINER" 2>/dev/null | grep -qx true; then
+              echo "RustFS container exited before becoming ready (attempt $attempt)."
+              docker ps -a --filter "name=^/${RUSTFS_CONTAINER}$"
+              docker logs "$RUSTFS_CONTAINER" || true
+              exit 1
+            fi
+            if curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:9000/health >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "RustFS did not become healthy after 60 checks."
+            docker ps -a --filter "name=^/${RUSTFS_CONTAINER}$"
+            docker logs "$RUSTFS_CONTAINER" || true
+            exit 1
+          fi
+
+          aws --endpoint-url "$S3_ENDPOINT" s3api create-bucket --bucket "$S3_BUCKET"
+          aws --endpoint-url "$S3_ENDPOINT" s3api head-bucket --bucket "$S3_BUCKET"
+
       - name: Populate S3 bucket with test data
         run: |
           # Download and extract Linux kernel source
           echo "Downloading Linux kernel source..."
           curl -L https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.63.tar.xz | tar -Jx
-          
+
           # Upload Linux source tree to S3
           echo "Uploading Linux source to S3 bucket..."
-          ./mc cp --recursive linux-6.12.63/ local/test-bucket/
-          
+          aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+            linux-6.12.63/ "s3://$S3_BUCKET/" \
+            --recursive --follow-symlinks --only-show-errors
+          aws --endpoint-url "$S3_ENDPOINT" s3api head-object \
+            --bucket "$S3_BUCKET" --key Makefile
           rm -rf linux-6.12.63
       - name: Test EROFS image built from S3
         run: |
           sudo apt -qq update
           sudo apt-get install -y libcurl4 libxml2 libssl-dev libelf-dev flex bison dwarves
           chmod +x bin/mkfs.erofs bin/fsck.erofs
-          ./erofs-s3-test http://localhost:9000 test-bucket ${{ matrix.urlstyle }} ${{ matrix.sig }} minioadmin minioadmin "${{ matrix.opts }}"
+          ./erofs-s3-test "$S3_ENDPOINT" "$S3_BUCKET" ${{ matrix.urlstyle }} ${{ matrix.sig }} minioadmin minioadmin "${{ matrix.opts }}"
       - name: Upload images if the test fails
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: erofs-s3-images-${{ matrix.urlstyle }}-sig${{ matrix.sig }}${{ matrix.opts }}
+          name: erofs-s3-images-${{ matrix.urlstyle }}-sig${{ matrix.sig }}-${{ strategy.job-index }}
           path: '*.img'
-      - name: Cleanup MinIO
+      - name: Collect RustFS logs
         if: always()
         run: |
-          pkill minio || true
+          RUSTFS_JOB_DIR="$RUNNER_TEMP/rustfs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ strategy.job-index }}"
+          RUSTFS_LOG_DIR="$RUSTFS_JOB_DIR/logs"
+          RUSTFS_ARTIFACT_DIR="$RUSTFS_JOB_DIR/artifacts"
+          mkdir -p "$RUSTFS_ARTIFACT_DIR"
+          if [ "$RUSTFS_CONTAINER_CREATED" = true ]; then
+            docker logs "$RUSTFS_CONTAINER" > "$RUSTFS_ARTIFACT_DIR/container.log" 2>&1 || true
+          else
+            printf 'RustFS container %s was not created.\n' "$RUSTFS_CONTAINER" \
+              > "$RUSTFS_ARTIFACT_DIR/container-status.txt"
+          fi
+          if [ -d "$RUSTFS_LOG_DIR" ]; then
+            sudo mkdir -p "$RUSTFS_ARTIFACT_DIR/rustfs-files"
+            sudo cp -a "$RUSTFS_LOG_DIR/." "$RUSTFS_ARTIFACT_DIR/rustfs-files/" || true
+            sudo chown -R "$(id -u):$(id -g)" "$RUSTFS_ARTIFACT_DIR"
+          fi
+      - name: Upload RustFS logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rustfs-logs-${{ matrix.urlstyle }}-sig${{ matrix.sig }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/rustfs-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/artifacts/
+      - name: Cleanup RustFS
+        if: always()
+        run: |
+          if [ "$RUSTFS_CONTAINER_CREATED" = true ]; then
+            docker rm -f "$RUSTFS_CONTAINER" || true
+          fi

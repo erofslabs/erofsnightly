@@ -66,7 +66,9 @@ mkdir -p s3-reference
 
 # Download all files from S3 bucket
 echo "Downloading files from s3://$S3_BUCKET to s3-reference/..."
-./mc cp --recursive "local/test-bucket/" s3-reference/
+aws --endpoint-url "$S3_ENDPOINT" --region us-east-1 s3 cp \
+	"s3://$S3_BUCKET/" s3-reference/ \
+	--recursive --only-show-errors
 
 echo "Download complete. Downloaded file count: $(find s3-reference -type f | wc -l)"
 
